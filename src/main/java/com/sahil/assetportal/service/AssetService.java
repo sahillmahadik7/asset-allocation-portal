@@ -27,4 +27,24 @@ public class AssetService {
         return assetRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Asset not found with id: " + id));
     }
+
+    public Asset updateAsset(Long id, Asset updatedAsset) {
+        Asset existingAsset = getAssetById(id);
+
+        existingAsset.setAssetCode(updatedAsset.getAssetCode());
+        existingAsset.setAssetType(updatedAsset.getAssetType());
+        existingAsset.setName(updatedAsset.getName());
+        existingAsset.setBrand(updatedAsset.getBrand());
+        existingAsset.setModel(updatedAsset.getModel());
+        existingAsset.setSerialNumber(updatedAsset.getSerialNumber());
+        existingAsset.setStatus(updatedAsset.getStatus());
+        existingAsset.setLocation(updatedAsset.getLocation());
+
+        return assetRepository.save(existingAsset);
+    }
+
+    public void deleteAsset(Long id) {
+        Asset existingAsset = getAssetById(id);
+        assetRepository.delete(existingAsset);
+    }
 }
