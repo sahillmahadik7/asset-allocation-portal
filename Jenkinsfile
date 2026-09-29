@@ -32,7 +32,10 @@ pipeline {
 
         stage('Deploy') {
             steps {
-                withEnv(["APP_PORT=${params.APP_PORT}"]) {
+                withEnv([
+                    "APP_PORT=${params.APP_PORT}",
+                    "JENKINS_NODE_COOKIE=dontKillMe"
+                ]) {
                     powershell '''
                         $pidFile = "deploy.pid"
                         $batFile = "$env:WORKSPACE\\start-app.bat"
@@ -65,7 +68,7 @@ pipeline {
                         Write-Host "Deploying: $($jar.FullName)"
                         Write-Host "Application port: $env:APP_PORT"
 
-                        # Create detached startup script
+                        # Create a detached startup script
                         $batContent = @"
 @echo off
 set JENKINS_NODE_COOKIE=dontKillMe
@@ -75,17 +78,18 @@ start "" /b java -Duser.timezone=UTC -jar "$($jar.FullName)" --server.port=$env:
 
                         Set-Content -Path $batFile -Value $batContent
 
-                        # Start application independently of Jenkins
+                        Write-Host "Starting detached Spring Boot application..."
+
                         Start-Process `
                             -FilePath "cmd.exe" `
                             -ArgumentList "/c", "`"$batFile`"" `
                             -WorkingDirectory $env:WORKSPACE `
                             -WindowStyle Hidden
 
-                        # Give Spring Boot time to start
-                        Start-Sleep -Seconds 5
+                        # Give Spring Boot time to initialize
+                        Start-Sleep -Seconds 8
 
-                        # Verify Java process exists
+                        # Verify that the deployed Java process exists
                         $javaProcess = Get-CimInstance Win32_Process |
                             Where-Object {
                                 $_.Name -eq "java.exe" -and
@@ -94,12 +98,25 @@ start "" /b java -Duser.timezone=UTC -jar "$($jar.FullName)" --server.port=$env:
                             Select-Object -First 1
 
                         if (-not $javaProcess) {
-                            throw "Application process did not start. Check deploy.log and deploy-error.log."
+                            Write-Host "Application process was not detected."
+
+                            if (Test-Path "$env:WORKSPACE\\deploy.log") {
+                                Write-Host "----- deploy.log -----"
+                                Get-Content "$env:WORKSPACE\\deploy.log" -Tail 50
+                            }
+
+                            if (Test-Path "$env:WORKSPACE\\deploy-error.log") {
+                                Write-Host "----- deploy-error.log -----"
+                                Get-Content "$env:WORKSPACE\\deploy-error.log" -Tail 50
+                            }
+
+                            throw "Application process did not start."
                         }
 
                         Set-Content $pidFile $javaProcess.ProcessId
 
                         Write-Host "Application started with PID: $($javaProcess.ProcessId)"
+                        Write-Host "Application port: $env:APP_PORT"
                         Write-Host "Deployment completed. Jenkins can continue."
                     '''
                 }
