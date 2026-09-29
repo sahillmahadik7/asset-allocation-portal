@@ -31,61 +31,73 @@ pipeline {
         }
 
         stage('Deploy') {
-    steps {
-        powershell """
-            \$appPort = '${params.APP_PORT}'
-            \$pidFile = "deploy.pid"
+            steps {
+                withEnv(["APP_PORT=${params.APP_PORT}"]) {
+                    powershell '''
+                        $pidFile = "deploy.pid"
+                        $batFile = "$env:WORKSPACE\\start-app.bat"
 
-            if (Test-Path \$pidFile) {
-                \$oldPid = Get-Content \$pidFile
+                        if (Test-Path $pidFile) {
+                            $oldPid = Get-Content $pidFile
 
-                if (\$oldPid) {
-                    \$oldProcess = Get-Process -Id \$oldPid -ErrorAction SilentlyContinue
+                            if ($oldPid) {
+                                $oldProcess = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
 
-                    if (\$oldProcess) {
-                        Stop-Process -Id \$oldPid -Force
-                        Write-Host "Stopped previous application process: \$oldPid"
-                    }
-                }
+                                if ($oldProcess) {
+                                    Stop-Process -Id $oldPid -Force
+                                    Write-Host "Stopped previous application process: $oldPid"
+                                }
+                            }
 
-                Remove-Item \$pidFile -Force
-            }
+                            Remove-Item $pidFile -Force
+                        }
 
-            \$jar = Get-ChildItem "target\\\\*.jar" |
-                   Where-Object { \$_.Name -notmatch "original" } |
-                   Select-Object -First 1
+                        $jar = Get-ChildItem "target\\*.jar" |
+                               Where-Object { $_.Name -notmatch "original" } |
+                               Select-Object -First 1
 
-            if (-not \$jar) {
-                throw "JAR file not found."
-            }
+                        if (-not $jar) {
+                            throw "JAR file not found."
+                        }
 
-            Write-Host "Deploying: \$($jar.FullName)"
-            Write-Host "Application port: \$appPort"
+                        Write-Host "Deploying: $($jar.FullName)"
+                        Write-Host "Application port: $env:APP_PORT"
 
-            \$process = Start-Process `
-                -FilePath "cmd.exe" `
-                -ArgumentList "/c", "start", """", "/b", "java", "-Duser.timezone=UTC", "-jar", "`"\$($jar.FullName)`"", "--server.port=\$appPort" `
-                -WorkingDirectory \$env:WORKSPACE `
-                -PassThru
+                        $batContent = @"
+@echo off
+cd /d "$env:WORKSPACE"
+start "" /b java -Duser.timezone=UTC -jar "$($jar.FullName)" --server.port=$env:APP_PORT > "$env:WORKSPACE\\deploy.log" 2> "$env:WORKSPACE\\deploy-error.log"
+"@
 
-            Start-Sleep -Seconds 3
+                        Set-Content -Path $batFile -Value $batContent
 
-            \$javaProcess = Get-Process -Name "java" -ErrorAction SilentlyContinue |
-                            Where-Object { \$_.Id -ne \$PID } |
-                            Sort-Object StartTime -Descending |
+                        Start-Process `
+                            -FilePath "cmd.exe" `
+                            -ArgumentList "/c", "`"$batFile`"" `
+                            -WorkingDirectory $env:WORKSPACE `
+                            -WindowStyle Hidden
+
+                        Start-Sleep -Seconds 5
+
+                        $javaProcess = Get-CimInstance Win32_Process |
+                            Where-Object {
+                                $_.Name -eq "java.exe" -and
+                                $_.CommandLine -like "*asset-allocation-portal-0.0.1-SNAPSHOT.jar*"
+                            } |
                             Select-Object -First 1
 
-            if (-not \$javaProcess) {
-                throw "Application process did not start."
+                        if (-not $javaProcess) {
+                            throw "Application process did not start. Check deploy.log and deploy-error.log."
+                        }
+
+                        Set-Content $pidFile $javaProcess.ProcessId
+
+                        Write-Host "Application started with PID: $($javaProcess.ProcessId)"
+                        Write-Host "Deployment completed. Jenkins can continue."
+                    '''
+                }
             }
-
-            Set-Content \$pidFile \$javaProcess.Id
-
-            Write-Host "Application started with PID: \$($javaProcess.Id)"
-            Write-Host "Deployment completed. Jenkins can continue."
-        """
-    }
-}
+        }
     }
 
     post {
