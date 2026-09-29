@@ -31,54 +31,54 @@ pipeline {
         }
 
         stage('Deploy') {
-    steps {
-        script {
-            def appPort = params.APP_PORT ?: '8081'
+            steps {
+                script {
+                    def appPort = params.APP_PORT ?: '8081'
 
-            powershell """
-                \$pidFile = "deploy.pid"
+                    powershell """
+                        \\$pidFile = "deploy.pid"
 
-                if (Test-Path \$pidFile) {
-                    \$oldPid = Get-Content \$pidFile
+                        if (Test-Path \\$pidFile) {
+                            \\$oldPid = Get-Content \\$pidFile
 
-                    if (\$oldPid) {
-                        \$process = Get-Process -Id \$oldPid -ErrorAction SilentlyContinue
+                            if (\\$oldPid) {
+                                \\$process = Get-Process -Id \\$oldPid -ErrorAction SilentlyContinue
 
-                        if (\$process) {
-                            Stop-Process -Id \$oldPid -Force
-                            Write-Host "Stopped previous application process: \$oldPid"
+                                if (\\$process) {
+                                    Stop-Process -Id \\$oldPid -Force
+                                    Write-Host "Stopped previous application process: \\$oldPid"
+                                }
+                            }
+
+                            Remove-Item \\$pidFile -Force
                         }
-                    }
 
-                    Remove-Item \$pidFile -Force
+                        \\$jar = Get-ChildItem "target\\\\*.jar" |
+                            Where-Object { \\$_.Name -notmatch "original" } |
+                            Select-Object -First 1
+
+                        if (-not \\$jar) {
+                            throw "JAR file not found."
+                        }
+
+                        Write-Host "Deploying: \\$($jar.FullName)"
+                        Write-Host "Application port: ${appPort}"
+
+                        \\$process = Start-Process `
+                            -FilePath "java" `
+                            -ArgumentList "-jar `"$($jar.FullName)`" --server.port=${appPort}" `
+                            -WorkingDirectory \\$env:WORKSPACE `
+                            -RedirectStandardOutput "\\$env:WORKSPACE\\\\deploy.log" `
+                            -RedirectStandardError "\\$env:WORKSPACE\\\\deploy-error.log" `
+                            -PassThru
+
+                        Set-Content \\$pidFile \\$process.Id
+
+                        Write-Host "Application started with PID: \\$($process.Id)"
+                    """
                 }
-
-                \$jar = Get-ChildItem "target\\\\*.jar" |
-                       Where-Object { \$_.Name -notmatch "original" } |
-                       Select-Object -First 1
-
-                if (-not \$jar) {
-                    throw "JAR file not found."
-                }
-
-                Write-Host "Deploying: \$([\$jar.FullName])"
-                Write-Host "Application port: ${appPort}"
-
-                \$process = Start-Process `
-                    -FilePath "java" `
-                    -ArgumentList "-jar `"\$([\$jar.FullName])`" --server.port=${appPort}" `
-                    -WorkingDirectory \$env:WORKSPACE `
-                    -RedirectStandardOutput "\$env:WORKSPACE\\\\deploy.log" `
-                    -RedirectStandardError "\$env:WORKSPACE\\\\deploy-error.log" `
-                    -PassThru
-
-                Set-Content \$pidFile \$process.Id
-
-                Write-Host "Application started with PID: \$([\$process.Id])"
-            """
+            }
         }
-    }
-}
     }
 
     post {
