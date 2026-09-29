@@ -37,6 +37,7 @@ pipeline {
                         $pidFile = "deploy.pid"
                         $batFile = "$env:WORKSPACE\\start-app.bat"
 
+                        # Stop previous deployment if it exists
                         if (Test-Path $pidFile) {
                             $oldPid = Get-Content $pidFile
 
@@ -52,6 +53,7 @@ pipeline {
                             Remove-Item $pidFile -Force
                         }
 
+                        # Find the packaged JAR
                         $jar = Get-ChildItem "target\\*.jar" |
                                Where-Object { $_.Name -notmatch "original" } |
                                Select-Object -First 1
@@ -63,22 +65,27 @@ pipeline {
                         Write-Host "Deploying: $($jar.FullName)"
                         Write-Host "Application port: $env:APP_PORT"
 
+                        # Create detached startup script
                         $batContent = @"
 @echo off
+set JENKINS_NODE_COOKIE=dontKillMe
 cd /d "$env:WORKSPACE"
 start "" /b java -Duser.timezone=UTC -jar "$($jar.FullName)" --server.port=$env:APP_PORT > "$env:WORKSPACE\\deploy.log" 2> "$env:WORKSPACE\\deploy-error.log"
 "@
 
                         Set-Content -Path $batFile -Value $batContent
 
+                        # Start application independently of Jenkins
                         Start-Process `
                             -FilePath "cmd.exe" `
                             -ArgumentList "/c", "`"$batFile`"" `
                             -WorkingDirectory $env:WORKSPACE `
                             -WindowStyle Hidden
 
+                        # Give Spring Boot time to start
                         Start-Sleep -Seconds 5
 
+                        # Verify Java process exists
                         $javaProcess = Get-CimInstance Win32_Process |
                             Where-Object {
                                 $_.Name -eq "java.exe" -and
