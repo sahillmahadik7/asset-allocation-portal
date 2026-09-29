@@ -31,55 +31,61 @@ pipeline {
         }
 
         stage('Deploy') {
-            steps {
-                powershell '''
-                    $pidFile = "deploy.pid"
+    steps {
+        powershell """
+            \$appPort = '${params.APP_PORT}'
+            \$pidFile = "deploy.pid"
 
-                    if (Test-Path $pidFile) {
-                        $oldPid = Get-Content $pidFile
+            if (Test-Path \$pidFile) {
+                \$oldPid = Get-Content \$pidFile
 
-                        if ($oldPid) {
-                            $process = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
+                if (\$oldPid) {
+                    \$oldProcess = Get-Process -Id \$oldPid -ErrorAction SilentlyContinue
 
-                            if ($process) {
-                                Stop-Process -Id $oldPid -Force
-                                Write-Host "Stopped previous application process: $oldPid"
-                            }
-                        }
-
-                        Remove-Item $pidFile -Force
+                    if (\$oldProcess) {
+                        Stop-Process -Id \$oldPid -Force
+                        Write-Host "Stopped previous application process: \$oldPid"
                     }
+                }
 
-                    $jar = Get-ChildItem "target\\*.jar" |
-                           Where-Object { $_.Name -notmatch "original" } |
-                           Select-Object -First 1
-
-                    if (-not $jar) {
-                        throw "JAR file not found."
-                    }
-
-                    Write-Host "Deploying: $($jar.FullName)"
-                    Write-Host "Application port: $env:APP_PORT"
-
-                    $process = Start-Process `
-                        -FilePath "java" `
-                        -ArgumentList @(
-                            "-Duser.timezone=UTC",
-                            "-jar",
-                            $jar.FullName,
-                            "--server.port=$env:APP_PORT"
-                        ) `
-                        -WorkingDirectory $env:WORKSPACE `
-                        -RedirectStandardOutput "$env:WORKSPACE\\deploy.log" `
-                        -RedirectStandardError "$env:WORKSPACE\\deploy-error.log" `
-                        -PassThru
-
-                    Set-Content $pidFile $process.Id
-
-                    Write-Host "Application started with PID: $($process.Id)"
-                '''
+                Remove-Item \$pidFile -Force
             }
-        }
+
+            \$jar = Get-ChildItem "target\\\\*.jar" |
+                   Where-Object { \$_.Name -notmatch "original" } |
+                   Select-Object -First 1
+
+            if (-not \$jar) {
+                throw "JAR file not found."
+            }
+
+            Write-Host "Deploying: \$($jar.FullName)"
+            Write-Host "Application port: \$appPort"
+
+            \$process = Start-Process `
+                -FilePath "cmd.exe" `
+                -ArgumentList "/c", "start", """", "/b", "java", "-Duser.timezone=UTC", "-jar", "`"\$($jar.FullName)`"", "--server.port=\$appPort" `
+                -WorkingDirectory \$env:WORKSPACE `
+                -PassThru
+
+            Start-Sleep -Seconds 3
+
+            \$javaProcess = Get-Process -Name "java" -ErrorAction SilentlyContinue |
+                            Where-Object { \$_.Id -ne \$PID } |
+                            Sort-Object StartTime -Descending |
+                            Select-Object -First 1
+
+            if (-not \$javaProcess) {
+                throw "Application process did not start."
+            }
+
+            Set-Content \$pidFile \$javaProcess.Id
+
+            Write-Host "Application started with PID: \$($javaProcess.Id)"
+            Write-Host "Deployment completed. Jenkins can continue."
+        """
+    }
+}
     }
 
     post {
