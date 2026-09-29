@@ -4,6 +4,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.validation.constraints.NotBlank;
 
 @Entity
 public class Asset {
@@ -12,13 +13,25 @@ public class Asset {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @NotBlank(message = "Asset code is required")
     private String assetCode;
+
+    @NotBlank(message = "Asset type is required")
     private String assetType;
+
+    @NotBlank(message = "Asset name is required")
     private String name;
+
     private String brand;
+
     private String model;
+
     private String serialNumber;
+
+    @NotBlank(message = "Status is required")
     private String status;
+
+    @NotBlank(message = "Location is required")
     private String location;
 
     public Asset() {

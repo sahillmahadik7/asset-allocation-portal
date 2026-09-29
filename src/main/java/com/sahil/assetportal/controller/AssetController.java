@@ -2,6 +2,7 @@ package com.sahil.assetportal.controller;
 
 import com.sahil.assetportal.entity.Asset;
 import com.sahil.assetportal.service.AssetService;
+import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
@@ -19,7 +20,7 @@ public class AssetController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public Asset createAsset(@RequestBody Asset asset) {
+    public Asset createAsset(@Valid @RequestBody Asset asset) {
         return assetService.createAsset(asset);
     }
 
@@ -31,5 +32,18 @@ public class AssetController {
     @GetMapping("/{id}")
     public Asset getAssetById(@PathVariable Long id) {
         return assetService.getAssetById(id);
+    }
+
+    @PutMapping("/{id}")
+    public Asset updateAsset(
+            @PathVariable Long id,
+            @Valid @RequestBody Asset asset) {
+        return assetService.updateAsset(id, asset);
+    }
+
+    @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteAsset(@PathVariable Long id) {
+        assetService.deleteAsset(id);
     }
 }
