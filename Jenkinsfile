@@ -64,6 +64,7 @@ pipeline {
                     $process = Start-Process `
                         -FilePath "java" `
                         -ArgumentList @(
+                            "-Duser.timezone=UTC",
                             "-jar",
                             $jar.FullName,
                             "--server.port=$env:APP_PORT"
