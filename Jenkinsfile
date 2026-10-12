@@ -151,6 +151,12 @@ pipeline {
             }
         }
 
+        stage('Verify Docker Access') {
+    steps {
+        bat 'docker version'
+    }
+}
+
         stage('Deploy Application') {
             steps {
                 timeout(time: 2, unit: 'MINUTES') {
