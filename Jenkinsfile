@@ -53,9 +53,11 @@ pipeline {
                     $process = Start-Process `
                         -FilePath 'java' `
                         -ArgumentList @(
-                            '-jar',
-                            "`"$jar`"",
-                            '--server.port=8082'
+                            '-Duser.timezone=UTC',
+'-jar',
+"`"$jar`"",
+'--server.port=8082',
+'--spring.datasource.url=jdbc:postgresql://localhost:5432/assetdb'
                         ) `
                         -WorkingDirectory $env:WORKSPACE `
                         -RedirectStandardOutput (Join-Path $env:WORKSPACE 'test-app.log') `
