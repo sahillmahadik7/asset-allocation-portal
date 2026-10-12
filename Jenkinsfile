@@ -1,5 +1,8 @@
 pipeline {
     agent any
+    options {
+    timeout(time: 15, unit: 'MINUTES')
+}
 
     tools {
         jdk 'JDK-21'
@@ -83,7 +86,7 @@ pipeline {
                     }
                 '''
 
-                bat 'cd selenium-tests && mvn test -Dapp.url=http://localhost:8082/'
+                bat 'cd selenium-tests && mvn test "-Dapp.url=http://localhost:8082/"'
             }
 
             post {
@@ -168,6 +171,8 @@ pipeline {
                     }
 
                     Write-Host "Deployment successful at http://localhost:$port/"
+
+                    exit 0
                 '''
             }
         }
