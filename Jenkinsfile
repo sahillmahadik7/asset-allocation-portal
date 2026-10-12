@@ -39,14 +39,15 @@ pipeline {
                     $ErrorActionPreference = 'Stop'
 
                     $jar = Join-Path $env:WORKSPACE 'target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar'
+                    $stdout = Join-Path $env:WORKSPACE 'test-app.log'
+                    $stderr = Join-Path $env:WORKSPACE 'test-app-error.log'
+                    $pidFile = Join-Path $env:WORKSPACE 'test-app.pid'
 
                     if (!(Test-Path $jar)) {
                         throw "Application JAR not found: $jar"
                     }
 
-                    if (Test-Path 'test-app.pid') {
-                        Remove-Item 'test-app.pid' -Force
-                    }
+                    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
 
                     Write-Host 'Starting test application on port 8082...'
 
@@ -54,17 +55,17 @@ pipeline {
                         -FilePath 'java' `
                         -ArgumentList @(
                             '-Duser.timezone=UTC',
-'-jar',
-"`"$jar`"",
-'--server.port=8082',
-'--spring.datasource.url=jdbc:postgresql://localhost:5432/assetdb'
+                            '-jar',
+                            $jar,
+                            '--server.port=8082',
+                            '--spring.datasource.url=jdbc:postgresql://localhost:5432/assetdb'
                         ) `
                         -WorkingDirectory $env:WORKSPACE `
-                        -RedirectStandardOutput (Join-Path $env:WORKSPACE 'test-app.log') `
-                        -RedirectStandardError (Join-Path $env:WORKSPACE 'test-app-error.log') `
+                        -RedirectStandardOutput $stdout `
+                        -RedirectStandardError $stderr `
                         -PassThru
 
-                    Set-Content -Path 'test-app.pid' -Value $process.Id
+                    Set-Content -Path $pidFile -Value $process.Id
 
                     $ready = $false
 
@@ -74,8 +75,8 @@ pipeline {
                         $process.Refresh()
 
                         if ($process.HasExited) {
-                            Get-Content 'test-app.log' -ErrorAction SilentlyContinue
-                            Get-Content 'test-app-error.log' -ErrorAction SilentlyContinue
+                            Get-Content $stdout -ErrorAction SilentlyContinue
+                            Get-Content $stderr -ErrorAction SilentlyContinue
                             throw 'Test application exited before becoming ready.'
                         }
 
@@ -89,21 +90,22 @@ pipeline {
                                 $ready = $true
                                 break
                             }
-                        } catch {
-                            # Application may still be starting.
+                        }
+                        catch {
+                            # Continue checking while the application starts.
                         }
                     }
 
                     if (!$ready) {
-                        Get-Content 'test-app.log' -ErrorAction SilentlyContinue
-                        Get-Content 'test-app-error.log' -ErrorAction SilentlyContinue
+                        Get-Content $stdout -ErrorAction SilentlyContinue
+                        Get-Content $stderr -ErrorAction SilentlyContinue
                         throw 'Test application did not become ready on port 8082.'
                     }
 
-                    Write-Host 'Test application is ready.'
+                    Write-Host "Test application is ready. PID: $($process.Id)"
                 '''
-            }
-        }
+    }
+}
 
         stage('Run Selenium Tests') {
             steps {
