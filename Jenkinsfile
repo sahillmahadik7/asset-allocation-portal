@@ -193,7 +193,7 @@ pipeline {
                     '''
 
                     bat '''
-                        start "AssetPortalApp" /B cmd /c "java ""-Duser.timezone=UTC"" -jar target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar --server.port=8081 > deploy.stdout.log 2>&1"
+                        bat 'call deploy-app.bat' > deploy.stdout.log 2>&1"
                     '''
 
                     powershell '''
