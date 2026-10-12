@@ -34,76 +34,71 @@ pipeline {
         }
 
         stage('Start Test Application') {
-            steps {
-                powershell '''
-                    $ErrorActionPreference = 'Stop'
+    steps {
+        powershell '''
+            $ErrorActionPreference = 'Stop'
 
-                    $jar = Join-Path $env:WORKSPACE 'target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar'
-                    $stdout = Join-Path $env:WORKSPACE 'test-app.log'
-                    $stderr = Join-Path $env:WORKSPACE 'test-app-error.log'
-                    $pidFile = Join-Path $env:WORKSPACE 'test-app.pid'
+            $jar = Join-Path $env:WORKSPACE 'target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar'
+            $stdout = Join-Path $env:WORKSPACE 'test-app.log'
+            $stderr = Join-Path $env:WORKSPACE 'test-app-error.log'
+            $pidFile = Join-Path $env:WORKSPACE 'test-app.pid'
 
-                    if (!(Test-Path $jar)) {
-                        throw "Application JAR not found: $jar"
+            if (!(Test-Path $jar)) {
+                throw "Application JAR not found: $jar"
+            }
+
+            Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+
+            Write-Host 'Starting test application on port 8082...'
+
+            $java = (Get-Command java.exe).Source
+            $arguments = '-Duser.timezone=UTC -jar "' + $jar +
+                '" --server.port=8082 --spring.datasource.url=jdbc:postgresql://localhost:5432/assetdb'
+
+            $command = '"' + $java + '" ' + $arguments
+            $encodedCommand = [Convert]::ToBase64String(
+                [Text.Encoding]::Unicode.GetBytes($command)
+            )
+
+            $process = Start-Process `
+                -FilePath 'cmd.exe' `
+                -ArgumentList @('/c', 'start', '""', '/b', $java, '-Duser.timezone=UTC', '-jar', "`"$jar`"", '--server.port=8082', '--spring.datasource.url=jdbc:postgresql://localhost:5432/assetdb') `
+                -WorkingDirectory $env:WORKSPACE `
+                -RedirectStandardOutput $stdout `
+                -RedirectStandardError $stderr `
+                -PassThru
+
+            Set-Content -Path $pidFile -Value $process.Id
+
+            $ready = $false
+
+            for ($i = 0; $i -lt 45; $i++) {
+                Start-Sleep -Seconds 2
+
+                try {
+                    $response = Invoke-WebRequest `
+                        -Uri 'http://127.0.0.1:8082/' `
+                        -TimeoutSec 3 `
+                        -UseBasicParsing
+
+                    if ($response.StatusCode -eq 200) {
+                        $ready = $true
+                        break
                     }
+                }
+                catch {
+                    # The application may still be starting.
+                }
+            }
 
-                    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+            if (!$ready) {
+                Get-Content $stdout -Tail 40 -ErrorAction SilentlyContinue
+                Get-Content $stderr -Tail 40 -ErrorAction SilentlyContinue
+                throw 'Test application did not become ready on port 8082.'
+            }
 
-                    Write-Host 'Starting test application on port 8082...'
-
-                    $process = Start-Process `
-                        -FilePath 'java' `
-                        -ArgumentList @(
-                            '-Duser.timezone=UTC',
-                            '-jar',
-                            $jar,
-                            '--server.port=8082',
-                            '--spring.datasource.url=jdbc:postgresql://localhost:5432/assetdb'
-                        ) `
-                        -WorkingDirectory $env:WORKSPACE `
-                        -RedirectStandardOutput $stdout `
-                        -RedirectStandardError $stderr `
-                        -PassThru
-
-                    Set-Content -Path $pidFile -Value $process.Id
-
-                    $ready = $false
-
-                    for ($i = 0; $i -lt 45; $i++) {
-                        Start-Sleep -Seconds 2
-
-                        $process.Refresh()
-
-                        if ($process.HasExited) {
-                            Get-Content $stdout -ErrorAction SilentlyContinue
-                            Get-Content $stderr -ErrorAction SilentlyContinue
-                            throw 'Test application exited before becoming ready.'
-                        }
-
-                        try {
-                            $response = Invoke-WebRequest `
-                                -Uri 'http://127.0.0.1:8082/' `
-                                -TimeoutSec 3 `
-                                -UseBasicParsing
-
-                            if ($response.StatusCode -eq 200) {
-                                $ready = $true
-                                break
-                            }
-                        }
-                        catch {
-                            # Continue checking while the application starts.
-                        }
-                    }
-
-                    if (!$ready) {
-                        Get-Content $stdout -ErrorAction SilentlyContinue
-                        Get-Content $stderr -ErrorAction SilentlyContinue
-                        throw 'Test application did not become ready on port 8082.'
-                    }
-
-                    Write-Host "Test application is ready. PID: $($process.Id)"
-                '''
+            Write-Host 'Test application is ready.'
+        '''
     }
 }
 
