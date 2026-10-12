@@ -193,7 +193,7 @@ pipeline {
                     '''
 
                     bat '''
-                        bat 'call deploy-app.bat' > deploy.stdout.log 2>&1"
+                        call deploy-app.bat
                     '''
 
                     powershell '''
