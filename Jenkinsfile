@@ -52,12 +52,12 @@ pipeline {
                             Select-Object -First 1
 
                         if ($listener) {
-                            throw "Port 8082 is already occupied. Stop the previous test application first."
+                            throw 'Port 8082 is already occupied. Stop the previous test application first.'
                         }
                     '''
 
                     bat '''
-                        start "AssetTestApp" /B cmd /c "java -Duser.timezone=UTC -jar target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar --server.port=8082 > test-app.log 2>&1"
+                        start "AssetTestApp" /B cmd /c "java ""-Duser.timezone=UTC"" -jar target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar --server.port=8082 > test-app.log 2>&1"
                     '''
 
                     powershell '''
@@ -129,7 +129,8 @@ pipeline {
                                 -ErrorAction SilentlyContinue
 
                             if ($p -and $p.Name -eq 'java.exe' -and
-                                $p.CommandLine -match 'asset-allocation-portal') {
+                                $p.CommandLine -match 'asset-allocation-portal' -and
+                                $p.CommandLine -match '--server.port=8082') {
                                 Stop-Process -Id $appPid -Force `
                                     -ErrorAction SilentlyContinue
                                 Write-Host "Stopped test application PID $appPid."
@@ -144,86 +145,99 @@ pipeline {
         }
 
         stage('Deploy Application') {
-    steps {
-        timeout(time: 90, unit: 'SECONDS') {
-            powershell '''
-                $port = 8081
+            steps {
+                timeout(time: 90, unit: 'SECONDS') {
+                    powershell '''
+                        $port = 8081
+                        $jar = Join-Path $PWD $env:APP_JAR
+                        $pidFile = Join-Path $PWD 'deploy.pid'
 
-                # Stop only the previous application recorded by this pipeline.
-                $pidFile = Join-Path $PWD 'deploy.pid'
+                        if (!(Test-Path $jar)) {
+                            throw "Application JAR not found: $jar"
+                        }
 
-                if (Test-Path $pidFile) {
-                    $oldPid = 0
-                    $rawPid = (Get-Content $pidFile -Raw).Trim()
+                        # Stop the previous deployment only when its PID
+                        # identifies this application.
+                        if (Test-Path $pidFile) {
+                            $oldPid = 0
+                            $rawPid = (Get-Content $pidFile -Raw).Trim()
 
-                    if ([int]::TryParse($rawPid, [ref]$oldPid)) {
-                        $p = Get-CimInstance Win32_Process `
-                            -Filter "ProcessId = $oldPid" `
+                            if ([int]::TryParse($rawPid, [ref]$oldPid)) {
+                                $p = Get-CimInstance Win32_Process `
+                                    -Filter "ProcessId = $oldPid" `
+                                    -ErrorAction SilentlyContinue
+
+                                if ($p -and $p.Name -eq 'java.exe' -and
+                                    $p.CommandLine -match 'asset-allocation-portal' -and
+                                    $p.CommandLine -match '--server.port=8081') {
+                                    Stop-Process -Id $oldPid -Force
+                                    Start-Sleep -Seconds 2
+                                }
+                            }
+
+                            Remove-Item $pidFile -Force `
+                                -ErrorAction SilentlyContinue
+                        }
+
+                        $listener = Get-NetTCPConnection `
+                            -LocalPort $port -State Listen `
+                            -ErrorAction SilentlyContinue |
+                            Select-Object -First 1
+
+                        if ($listener) {
+                            throw "Port 8081 is still occupied by PID $($listener.OwningProcess). Check the process before continuing."
+                        }
+
+                        Remove-Item 'deploy.stdout.log' -Force `
                             -ErrorAction SilentlyContinue
+                    '''
 
-                        if ($p -and $p.Name -eq 'java.exe' -and
-                            $p.CommandLine -match 'asset-allocation-portal') {
-                            Stop-Process -Id $oldPid -Force
+                    bat '''
+                        start "AssetPortalApp" /B cmd /c "java ""-Duser.timezone=UTC"" -jar target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar --server.port=8081 > deploy.stdout.log 2>&1"
+                    '''
+
+                    powershell '''
+                        $ready = $false
+
+                        for ($i = 0; $i -lt 30; $i++) {
                             Start-Sleep -Seconds 2
+
+                            try {
+                                $r = Invoke-WebRequest `
+                                    -Uri 'http://127.0.0.1:8081/' `
+                                    -TimeoutSec 2 -UseBasicParsing
+
+                                if ($r.StatusCode -eq 200) {
+                                    $ready = $true
+                                    break
+                                }
+                            } catch {}
                         }
-                    }
 
-                    Remove-Item $pidFile -Force
-                }
-
-                $listener = Get-NetTCPConnection `
-                    -LocalPort $port -State Listen `
-                    -ErrorAction SilentlyContinue |
-                    Select-Object -First 1
-
-                if ($listener) {
-                    throw 'Port 8081 is still occupied. Check the process before continuing.'
-                }
-            '''
-
-            bat '''
-                start "AssetPortalApp" /B cmd /c "java ""-Duser.timezone=UTC"" -jar target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar --server.port=8081 > deploy.stdout.log 2>&1"
-            '''
-
-            powershell '''
-                $ready = $false
-
-                for ($i = 0; $i -lt 30; $i++) {
-                    Start-Sleep -Seconds 2
-
-                    try {
-                        $r = Invoke-WebRequest `
-                            -Uri 'http://127.0.0.1:8081/' `
-                            -TimeoutSec 2 -UseBasicParsing
-
-                        if ($r.StatusCode -eq 200) {
-                            $ready = $true
-                            break
+                        if (!$ready) {
+                            Get-Content 'deploy.stdout.log' `
+                                -ErrorAction SilentlyContinue
+                            throw 'Deployment failed: application did not return HTTP 200 on port 8081.'
                         }
-                    } catch {}
+
+                        $listener = Get-NetTCPConnection `
+                            -LocalPort 8081 -State Listen `
+                            -ErrorAction SilentlyContinue |
+                            Select-Object -First 1
+
+                        if (!$listener) {
+                            throw 'Application responded but no listener was found on port 8081.'
+                        }
+
+                        Set-Content 'deploy.pid' $listener.OwningProcess
+
+                        Write-Host 'Deployment successful: http://localhost:8081/'
+                        Write-Host "Application process PID: $($listener.OwningProcess)"
+                    '''
                 }
-
-                if (!$ready) {
-                    Get-Content 'deploy.stdout.log' `
-                        -ErrorAction SilentlyContinue
-                    throw 'Deployment failed: application did not return HTTP 200.'
-                }
-
-                $listener = Get-NetTCPConnection `
-                    -LocalPort 8081 -State Listen `
-                    -ErrorAction SilentlyContinue |
-                    Select-Object -First 1
-
-                if ($listener) {
-                    Set-Content 'deploy.pid' $listener.OwningProcess
-                }
-
-                Write-Host 'Deployment successful: http://localhost:8081/'
-                Write-Host 'Application launched independently of the pipeline.'
-            '''
+            }
         }
     }
-}
 
     post {
         always {
@@ -250,9 +264,6 @@ pipeline {
                     Remove-Item $pidFile -Force `
                         -ErrorAction SilentlyContinue
                 }
-
-                Remove-Item 'deploy-already-healthy.flag' -Force `
-                    -ErrorAction SilentlyContinue
             '''
         }
 
