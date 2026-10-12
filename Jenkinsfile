@@ -43,87 +43,58 @@ pipeline {
         }
 
         stage('Start Test Application') {
-            steps {
-                timeout(time: 2, unit: 'MINUTES') {
-                    powershell '''
-                        $ErrorActionPreference = 'Stop'
-                        $port = 8082
-                        $jar = Join-Path $PWD 'target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar'
-                        $out = Join-Path $PWD 'test-app.stdout.log'
-                        $err = Join-Path $PWD 'test-app.stderr.log'
-                        $pidFile = Join-Path $PWD 'test-app.pid'
+    steps {
+        timeout(time: 90, unit: 'SECONDS') {
+            powershell '''
+                $listener = Get-NetTCPConnection -LocalPort 8082 `
+                    -State Listen -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
 
-                        if (!(Test-Path $jar)) {
-                            throw "Application JAR not found: $jar"
-                        }
-
-                        # Remove only a listener on the test port.
-                        $listener = Get-NetTCPConnection `
-                            -LocalPort $port -State Listen `
-                            -ErrorAction SilentlyContinue |
-                            Select-Object -First 1
-
-                        if ($listener) {
-                            $existing = Get-CimInstance Win32_Process `
-                                -Filter "ProcessId = $($listener.OwningProcess)"
-
-                            if ($existing.CommandLine -notmatch
-    'asset-allocation-portal.*[.]jar|asset-allocation-portal-0[.]0[.]1-SNAPSHOT[.]jar') {
-                                throw "Port $port is occupied by an unrelated process (PID $($listener.OwningProcess))."
-                            }
-
-                            Stop-Process -Id $listener.OwningProcess -Force
-                            Start-Sleep -Seconds 2
-                        }
-
-                        Remove-Item $out, $err, $pidFile `
-                            -Force -ErrorAction SilentlyContinue
-
-                        $p = Start-Process -FilePath 'java' `
-                            -ArgumentList @(
-                                '-Duser.timezone=UTC',
-                                '-jar',
-                                "`"$jar`"",
-                                '--server.port=8082'
-                            ) `
-                            -PassThru `
-                            -RedirectStandardOutput $out `
-                            -RedirectStandardError $err
-
-                        Set-Content -Path $pidFile -Value $p.Id
-
-                        $ready = $false
-                        for ($i = 0; $i -lt 45; $i++) {
-                            Start-Sleep -Seconds 2
-
-                            if ($p.HasExited) {
-                                break
-                            }
-
-                            try {
-                                $response = Invoke-WebRequest `
-                                    -Uri 'http://127.0.0.1:8082/' `
-                                    -TimeoutSec 3 `
-                                    -UseBasicParsing
-
-                                if ($response.StatusCode -eq 200) {
-                                    $ready = $true
-                                    break
-                                }
-                            } catch {}
-                        }
-
-                        if (!$ready) {
-                            Get-Content $out -ErrorAction SilentlyContinue
-                            Get-Content $err -ErrorAction SilentlyContinue
-                            throw 'Test application failed to become ready on port 8082.'
-                        }
-
-                        Write-Host 'Test application is ready on port 8082.'
-                    '''
+                if ($listener) {
+                    throw "Port 8082 is already occupied. Stop the previous test application before rebuilding."
                 }
-            }
+            '''
+
+            bat '''
+                start "AssetTestApp" /B cmd /c "java -Duser.timezone=UTC -jar target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar --server.port=8082 > test-app.log 2>&1"
+            '''
+
+            powershell '''
+                $ready = $false
+
+                for ($i = 0; $i -lt 30; $i++) {
+                    Start-Sleep -Seconds 2
+
+                    try {
+                        $r = Invoke-WebRequest `
+                            -Uri 'http://127.0.0.1:8082/' `
+                            -TimeoutSec 2 -UseBasicParsing
+
+                        if ($r.StatusCode -eq 200) {
+                            $ready = $true
+                            break
+                        }
+                    } catch {}
+                }
+
+                if (!$ready) {
+                    Get-Content 'test-app.log' -ErrorAction SilentlyContinue
+                    throw 'Test application failed to start on port 8082.'
+                }
+
+                $listener = Get-NetTCPConnection -LocalPort 8082 `
+                    -State Listen -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+
+                if ($listener) {
+                    Set-Content 'test-app.pid' $listener.OwningProcess
+                }
+
+                Write-Host 'Test application is ready on port 8082.'
+            '''
         }
+    }
+}
 
         stage('Run Selenium Tests') {
             steps {
@@ -141,25 +112,28 @@ pipeline {
             }
         }
 
-        stage('Stop Test Application') {
-            steps {
-                powershell '''
-                    $pidFile = Join-Path $PWD 'test-app.pid'
+        
+stage('Stop Test Application') {
+    steps {
+        powershell '''
+            if (Test-Path 'test-app.pid') {
+                $appPid = [int](Get-Content 'test-app.pid' -Raw).Trim()
+                $p = Get-CimInstance Win32_Process `
+                    -Filter "ProcessId = $appPid" `
+                    -ErrorAction SilentlyContinue
 
-                    if (Test-Path $pidFile) {
-                        $appPid = [int](Get-Content $pidFile -Raw).Trim()
-                        $p = Get-Process -Id $appPid -ErrorAction SilentlyContinue
+                if ($p -and $p.Name -eq 'java.exe' -and
+                    $p.CommandLine -match 'asset-allocation-portal') {
+                    Stop-Process -Id $appPid -Force
+                    Write-Host "Stopped test application PID $appPid."
+                }
 
-                        if ($p) {
-                            Stop-Process -Id $appPid -Force
-                            Write-Host "Stopped test application PID $appPid."
-                        }
-
-                        Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
-                    }
-                '''
+                Remove-Item 'test-app.pid' -Force
             }
-        }
+        '''
+    }
+}
+
 
         stage('Deploy Application') {
             steps {
