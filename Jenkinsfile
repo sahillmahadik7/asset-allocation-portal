@@ -157,91 +157,74 @@ pipeline {
     }
 }
 
-        stage('Deploy Application') {
-            steps {
-                timeout(time: 2, unit: 'MINUTES') {
-                    powershell '''
-                        $ErrorActionPreference = 'Stop'
-
-                        $taskName = 'AssetAllocationPortal'
-                        $deployDir = 'C:\\Apps\\AssetAllocationPortal'
-                        $sourceJar = Join-Path $env:WORKSPACE $env:APP_JAR
-                        $targetJar = Join-Path $deployDir 'asset-allocation-portal.jar'
-
-                        if (!(Test-Path $sourceJar)) {
-                            throw "Build artifact not found: $sourceJar"
-                        }
-
-                        if (!(Test-Path $deployDir)) {
-                            New-Item -ItemType Directory `
-                                -Path $deployDir -Force | Out-Null
-                        }
-
-                        Write-Host 'Stopping the existing scheduled application...'
-
-                        Stop-ScheduledTask -TaskName $taskName `
-                            -ErrorAction SilentlyContinue
-
-                        $deadline = (Get-Date).AddSeconds(20)
-
-                        do {
-                            $listener = Get-NetTCPConnection `
-                                -LocalPort 8081 -State Listen `
-                                -ErrorAction SilentlyContinue |
-                                Select-Object -First 1
-
-                            if (!$listener) {
-                                break
-                            }
-
-                            Start-Sleep -Seconds 1
-                        } while ((Get-Date) -lt $deadline)
-
-                        $listener = Get-NetTCPConnection `
-                            -LocalPort 8081 -State Listen `
-                            -ErrorAction SilentlyContinue |
-                            Select-Object -First 1
-
-                        if ($listener) {
-                            throw "Port 8081 is still occupied by PID $($listener.OwningProcess). The old application did not stop."
-                        }
-
-                        Write-Host 'Copying the new application JAR...'
-
-                        Copy-Item -LiteralPath $sourceJar `
-                            -Destination $targetJar -Force
-
-                        Write-Host 'Starting the scheduled application...'
-
-                        Start-ScheduledTask -TaskName $taskName
-
-                        $ready = $false
-
-                        for ($i = 0; $i -lt 30; $i++) {
-                            Start-Sleep -Seconds 2
-
-                            try {
-                                $response = Invoke-WebRequest `
-                                    -Uri 'http://127.0.0.1:8081/' `
-                                    -TimeoutSec 3 -UseBasicParsing
-
-                                if ($response.StatusCode -eq 200) {
-                                    $ready = $true
-                                    break
-                                }
-                            } catch {}
-                        }
-
-                        if (!$ready) {
-                            throw 'Deployment failed: application did not return HTTP 200 on port 8081.'
-                        }
-
-                        Write-Host 'Deployment successful: http://localhost:8081/'
-                    '''
-                }
-            }
+        
+stage('Build Docker Image') {
+    steps {
+        timeout(time: 5, unit: 'MINUTES') {
+            bat '"C:\\Users\\Sahil Mahadik\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe" build -t asset-allocation-portal:%BUILD_NUMBER% .'
         }
     }
+}
+
+stage('Deploy Docker Container') {
+    steps {
+        timeout(time: 3, unit: 'MINUTES') {
+            powershell '''
+                $ErrorActionPreference = 'Stop'
+                $docker = 'C:\\Users\\Sahil Mahadik\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe'
+                $image = "asset-allocation-portal:$env:BUILD_NUMBER"
+
+                Write-Host 'Verifying the image...'
+                & $docker image inspect $image
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Image not found: $image"
+                }
+
+                Write-Host 'Removing the previous application container...'
+                & $docker rm -f asset-portal
+                if ($LASTEXITCODE -ne 0) {
+                    throw 'Could not remove the previous application container.'
+                }
+
+                Write-Host 'Starting the new application container...'
+                & $docker run -d `
+                    --name asset-portal `
+                    --restart unless-stopped `
+                    -p 8081:8081 `
+                    -e 'SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/assetdb' `
+                    $image
+
+                if ($LASTEXITCODE -ne 0) {
+                    throw 'Docker could not start the new application container.'
+                }
+
+                $ready = $false
+                for ($i = 0; $i -lt 30; $i++) {
+                    Start-Sleep -Seconds 2
+                    try {
+                        $response = Invoke-WebRequest `
+                            -Uri 'http://127.0.0.1:8081/' `
+                            -TimeoutSec 3 -UseBasicParsing
+
+                        if ($response.StatusCode -eq 200) {
+                            $ready = $true
+                            break
+                        }
+                    } catch {}
+                }
+
+                if (!$ready) {
+                    & $docker logs --tail 60 asset-portal
+                    throw 'Deployment failed health verification.'
+                }
+
+                Write-Host 'Docker deployment successful.'
+                & $docker ps --filter 'name=asset-portal'
+            '''
+        }
+    }
+}
+
 
     post {
         always {
