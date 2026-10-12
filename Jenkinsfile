@@ -1,121 +1,112 @@
 pipeline {
     agent any
 
-    options {
-        timestamps()
-        timeout(time: 15, unit: 'MINUTES')
-        disableConcurrentBuilds()
-        skipDefaultCheckout(true)
-    }
-
     tools {
         jdk 'JDK-21'
         maven 'Maven-3.9.16'
     }
 
-    environment {
-        APP_JAR = 'target/asset-allocation-portal-0.0.1-SNAPSHOT.jar'
-        TEST_PORT = '8082'
-        DEPLOY_PORT = '8081'
+    options {
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
     }
 
     stages {
+
         stage('Checkout') {
             steps {
                 checkout scm
-                bat 'git status --short --branch'
             }
         }
 
         stage('Build Spring Boot App') {
             steps {
-                timeout(time: 3, unit: 'MINUTES') {
-                    bat 'mvn -B clean package'
-                }
+                bat 'mvn -B clean package'
             }
         }
 
         stage('Archive Artifact') {
             steps {
-                archiveArtifacts(
-                    artifacts: 'target/*.jar',
-                    fingerprint: true
-                )
+                archiveArtifacts artifacts: 'target/*.jar',
+                                 fingerprint: true
             }
         }
 
         stage('Start Test Application') {
             steps {
-                timeout(time: 90, unit: 'SECONDS') {
-                    powershell '''
-                        $listener = Get-NetTCPConnection `
-                            -LocalPort 8082 -State Listen `
-                            -ErrorAction SilentlyContinue |
-                            Select-Object -First 1
+                powershell '''
+                    $ErrorActionPreference = 'Stop'
 
-                        if ($listener) {
-                            throw 'Port 8082 is already occupied.'
-                        }
-                    '''
+                    $jar = Join-Path $env:WORKSPACE 'target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar'
 
-                    bat '''
-                        start "AssetTestApp" /B cmd /c "java ""-Duser.timezone=UTC"" -jar target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar --server.port=8082 > test-app.log 2>&1"
-                    '''
+                    if (!(Test-Path $jar)) {
+                        throw "Application JAR not found: $jar"
+                    }
 
-                    powershell '''
-                        $ready = $false
+                    if (Test-Path 'test-app.pid') {
+                        Remove-Item 'test-app.pid' -Force
+                    }
 
-                        for ($i = 0; $i -lt 30; $i++) {
-                            Start-Sleep -Seconds 2
+                    Write-Host 'Starting test application on port 8082...'
 
-                            try {
-                                $r = Invoke-WebRequest `
-                                    -Uri 'http://127.0.0.1:8082/' `
-                                    -TimeoutSec 2 -UseBasicParsing
+                    $process = Start-Process `
+                        -FilePath 'java' `
+                        -ArgumentList @(
+                            '-jar',
+                            "`"$jar`"",
+                            '--server.port=8082'
+                        ) `
+                        -WorkingDirectory $env:WORKSPACE `
+                        -RedirectStandardOutput (Join-Path $env:WORKSPACE 'test-app.log') `
+                        -RedirectStandardError (Join-Path $env:WORKSPACE 'test-app-error.log') `
+                        -PassThru
 
-                                if ($r.StatusCode -eq 200) {
-                                    $ready = $true
-                                    break
-                                }
-                            } catch {}
-                        }
+                    Set-Content -Path 'test-app.pid' -Value $process.Id
 
-                        if (!$ready) {
-                            Get-Content 'test-app.log' `
-                                -ErrorAction SilentlyContinue
-                            throw 'Test application failed to start on port 8082.'
-                        }
+                    $ready = $false
 
-                        $listener = Get-NetTCPConnection `
-                            -LocalPort 8082 -State Listen `
-                            -ErrorAction SilentlyContinue |
-                            Select-Object -First 1
+                    for ($i = 0; $i -lt 45; $i++) {
+                        Start-Sleep -Seconds 2
 
-                        if ($listener) {
-                            Set-Content 'test-app.pid' $listener.OwningProcess
+                        $process.Refresh()
+
+                        if ($process.HasExited) {
+                            Get-Content 'test-app.log' -ErrorAction SilentlyContinue
+                            Get-Content 'test-app-error.log' -ErrorAction SilentlyContinue
+                            throw 'Test application exited before becoming ready.'
                         }
 
-                        Write-Host 'Test application is ready on port 8082.'
-                    '''
-                }
+                        try {
+                            $response = Invoke-WebRequest `
+                                -Uri 'http://127.0.0.1:8082/' `
+                                -TimeoutSec 3 `
+                                -UseBasicParsing
+
+                            if ($response.StatusCode -eq 200) {
+                                $ready = $true
+                                break
+                            }
+                        } catch {
+                            # Application may still be starting.
+                        }
+                    }
+
+                    if (!$ready) {
+                        Get-Content 'test-app.log' -ErrorAction SilentlyContinue
+                        Get-Content 'test-app-error.log' -ErrorAction SilentlyContinue
+                        throw 'Test application did not become ready on port 8082.'
+                    }
+
+                    Write-Host 'Test application is ready.'
+                '''
             }
         }
 
         stage('Run Selenium Tests') {
             steps {
-                timeout(time: 4, unit: 'MINUTES') {
-                    dir('selenium-tests') {
-                        bat 'mvn -B test "-Dapp.url=http://127.0.0.1:8082/"'
-                    }
-                }
-            }
-
-            post {
-                always {
-                    junit(
-                        allowEmptyResults: true,
-                        testResults: 'selenium-tests/target/surefire-reports/*.xml'
-                    )
+                dir('selenium-tests') {
+                    bat 'mvn -B test "-Dapp.url=http://127.0.0.1:8082/"'
                 }
             }
         }
@@ -123,145 +114,155 @@ pipeline {
         stage('Stop Test Application') {
             steps {
                 powershell '''
+                    $ErrorActionPreference = 'Stop'
+
                     if (Test-Path 'test-app.pid') {
-                        $rawPid = (Get-Content 'test-app.pid' -Raw).Trim()
-                        $appPid = 0
+                        $pidValue = Get-Content 'test-app.pid' -ErrorAction SilentlyContinue
 
-                        if ([int]::TryParse($rawPid, [ref]$appPid)) {
-                            $p = Get-CimInstance Win32_Process `
-                                -Filter "ProcessId = $appPid" `
-                                -ErrorAction SilentlyContinue
+                        if ($pidValue) {
+                            $testProcess = Get-Process -Id ([int]$pidValue) -ErrorAction SilentlyContinue
 
-                            if ($p -and
-                                $p.Name -eq 'java.exe' -and
-                                $p.CommandLine -match 'asset-allocation-portal' -and
-                                $p.CommandLine -match '--server.port=8082') {
-
-                                Stop-Process -Id $appPid -Force `
-                                    -ErrorAction SilentlyContinue
-
-                                Write-Host "Stopped test application PID $appPid."
+                            if ($testProcess) {
+                                Stop-Process -Id ([int]$pidValue) -Force
+                                Write-Host 'Test application stopped.'
                             }
                         }
 
-                        Remove-Item 'test-app.pid' -Force `
-                            -ErrorAction SilentlyContinue
+                        Remove-Item 'test-app.pid' -Force -ErrorAction SilentlyContinue
                     }
                 '''
             }
         }
 
         stage('Verify Docker Access') {
-    steps {
-        bat '"C:\\Users\\Sahil Mahadik\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe" version'
-    }
-}
-
-        
-stage('Build Docker Image') {
-    steps {
-        timeout(time: 5, unit: 'MINUTES') {
-            bat '"C:\\Users\\Sahil Mahadik\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe" build -t asset-allocation-portal:%BUILD_NUMBER% .'
+            steps {
+                bat '"C:\\Users\\Sahil Mahadik\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe" version'
+            }
         }
-    }
-}
 
-stage('Deploy Docker Container') {
-    steps {
-        timeout(time: 3, unit: 'MINUTES') {
-            powershell '''
-                $ErrorActionPreference = 'Stop'
-                $docker = 'C:\\Users\\Sahil Mahadik\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe'
-                $image = "asset-allocation-portal:$env:BUILD_NUMBER"
+        stage('Build Docker Image') {
+            steps {
+                bat '"C:\\Users\\Sahil Mahadik\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe" build -t asset-allocation-portal:%BUILD_NUMBER% .'
+            }
+        }
 
-                Write-Host 'Verifying the image...'
-                & $docker image inspect $image
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Image not found: $image"
-                }
+        stage('Deploy Docker Container') {
+            steps {
+                powershell '''
+                    $ErrorActionPreference = 'Stop'
 
-                Write-Host 'Removing the previous application container...'
-                & $docker rm -f asset-portal
-                if ($LASTEXITCODE -ne 0) {
-                    throw 'Could not remove the previous application container.'
-                }
+                    $docker = 'C:\\Users\\Sahil Mahadik\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe'
+                    $image = "asset-allocation-portal:$env:BUILD_NUMBER"
 
-                Write-Host 'Starting the new application container...'
-                & $docker run -d `
-                    --name asset-portal `
-                    --restart unless-stopped `
-                    -p 8081:8081 `
-                    -e 'SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/assetdb' `
-                    $image
+                    Write-Host 'Verifying the Docker image...'
 
-                if ($LASTEXITCODE -ne 0) {
-                    throw 'Docker could not start the new application container.'
-                }
+                    & $docker image inspect $image
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Docker image not found: $image"
+                    }
 
-                $ready = $false
-                for ($i = 0; $i -lt 30; $i++) {
-                    Start-Sleep -Seconds 2
-                    try {
-                        $response = Invoke-WebRequest `
-                            -Uri 'http://127.0.0.1:8081/' `
-                            -TimeoutSec 3 -UseBasicParsing
+                    Write-Host 'Checking for the previous application container...'
 
-                        if ($response.StatusCode -eq 200) {
-                            $ready = $true
-                            break
+                    $existing = & $docker ps -aq --filter 'name=^/asset-portal$'
+
+                    if ($LASTEXITCODE -ne 0) {
+                        throw 'Could not check existing Docker containers.'
+                    }
+
+                    if ($existing) {
+                        Write-Host 'Removing the previous application container...'
+
+                        & $docker rm -f asset-portal
+
+                        if ($LASTEXITCODE -ne 0) {
+                            throw 'Could not remove the previous application container.'
                         }
-                    } catch {}
-                }
+                    }
 
-                if (!$ready) {
-                    & $docker logs --tail 60 asset-portal
-                    throw 'Deployment failed health verification.'
-                }
+                    Write-Host 'Starting the new application container...'
 
-                Write-Host 'Docker deployment successful.'
-                & $docker ps --filter 'name=asset-portal'
-            '''
+                    $runArgs = @(
+                        'run',
+                        '-d',
+                        '--name', 'asset-portal',
+                        '--restart', 'unless-stopped',
+                        '-p', '8081:8081',
+                        '-e', 'SPRING_DATASOURCE_URL=jdbc:postgresql://host.docker.internal:5432/assetdb',
+                        $image
+                    )
+
+                    & $docker @runArgs
+
+                    if ($LASTEXITCODE -ne 0) {
+                        throw 'Docker could not start the application container.'
+                    }
+
+                    Write-Host 'Checking application health...'
+
+                    $ready = $false
+
+                    for ($i = 0; $i -lt 30; $i++) {
+                        Start-Sleep -Seconds 2
+
+                        try {
+                            $response = Invoke-WebRequest `
+                                -Uri 'http://127.0.0.1:8081/' `
+                                -TimeoutSec 3 `
+                                -UseBasicParsing
+
+                            if ($response.StatusCode -eq 200) {
+                                $ready = $true
+                                break
+                            }
+                        } catch {
+                            # Application may still be starting.
+                        }
+                    }
+
+                    if (!$ready) {
+                        & $docker logs --tail 60 asset-portal
+                        throw 'Deployment failed health verification.'
+                    }
+
+                    Write-Host 'Deployment successful.'
+
+                    & $docker ps --filter 'name=asset-portal'
+
+                    if ($LASTEXITCODE -ne 0) {
+                        throw 'Could not verify the deployed container.'
+                    }
+                '''
+            }
         }
     }
-}
-
 
     post {
         always {
             powershell '''
-                $pidFile = Join-Path $env:WORKSPACE 'test-app.pid'
+                if (Test-Path 'test-app.pid') {
+                    $pidValue = Get-Content 'test-app.pid' -ErrorAction SilentlyContinue
 
-                if (Test-Path $pidFile) {
-                    $rawPid = (Get-Content $pidFile -Raw).Trim()
-                    $appPid = 0
+                    if ($pidValue) {
+                        $testProcess = Get-Process -Id ([int]$pidValue) -ErrorAction SilentlyContinue
 
-                    if ([int]::TryParse($rawPid, [ref]$appPid)) {
-                        $p = Get-CimInstance Win32_Process `
-                            -Filter "ProcessId = $appPid" `
-                            -ErrorAction SilentlyContinue
-
-                        if ($p -and
-                            $p.Name -eq 'java.exe' -and
-                            $p.CommandLine -match 'asset-allocation-portal' -and
-                            $p.CommandLine -match '--server.port=8082') {
-
-                            Stop-Process -Id $appPid -Force `
-                                -ErrorAction SilentlyContinue
+                        if ($testProcess) {
+                            Stop-Process -Id ([int]$pidValue) -Force -ErrorAction SilentlyContinue
+                            Write-Host 'Cleaned up the temporary test application.'
                         }
                     }
 
-                    Remove-Item $pidFile -Force `
-                        -ErrorAction SilentlyContinue
+                    Remove-Item 'test-app.pid' -Force -ErrorAction SilentlyContinue
                 }
             '''
         }
 
         success {
-            echo 'SUCCESS: Build, Selenium tests, and deployment completed.'
+            echo 'Pipeline completed successfully.'
+            echo 'Build, Selenium tests, Docker image creation, and deployment passed.'
         }
 
         failure {
-            echo 'FAILURE: Inspect the failed stage and published test results.'
+            echo 'Pipeline failed. Check the first failed stage in Console Output.'
         }
 
         aborted {
