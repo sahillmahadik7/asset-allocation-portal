@@ -1,23 +1,27 @@
 pipeline {
     agent any
 
+    tools {
+        jdk 'JDK-21'
+        maven 'Maven-3.9.16'
+    }
+
     parameters {
         string(
             name: 'APP_PORT',
             defaultValue: '8081',
-            description: 'Port on which the Asset Allocation Portal will run'
+            description: 'Port for the deployed application'
         )
     }
 
     stages {
-
         stage('Checkout') {
             steps {
                 checkout scm
             }
         }
 
-        stage('Build and Test') {
+        stage('Build Spring Boot App') {
             steps {
                 bat 'mvn clean package'
             }
@@ -26,111 +30,155 @@ pipeline {
         stage('Archive Artifact') {
             steps {
                 archiveArtifacts artifacts: 'target/*.jar',
-                                   fingerprint: true
+                                 fingerprint: true
             }
         }
 
-        stage('Deploy') {
+        stage('Run Selenium Tests') {
             steps {
-                withEnv([
-                    "APP_PORT=${params.APP_PORT}",
-                    "JENKINS_NODE_COOKIE=dontKillMe"
-                ]) {
+                powershell '''
+                    $ErrorActionPreference = "Stop"
+                    $jar = Join-Path $PWD.Path "target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar"
+                    $java = (Get-Command java.exe -ErrorAction Stop).Source
+
+                    if (-not (Test-Path $jar)) {
+                        throw "Application JAR not found: $jar"
+                    }
+
+                    $env:JENKINS_NODE_COOKIE = "dontKillMe"
+
+                    $process = Start-Process `
+                        -FilePath $java `
+                        -ArgumentList @("-Duser.timezone=UTC", "-jar", $jar, "--server.port=8082") `
+                        -WorkingDirectory $PWD.Path `
+                        -RedirectStandardOutput (Join-Path $PWD.Path "selenium-app.log") `
+                        -RedirectStandardError (Join-Path $PWD.Path "selenium-app-error.log") `
+                        -PassThru
+
+                    $process.Id | Set-Content "test-app.pid"
+
+                    $ready = $false
+                    for ($i = 0; $i -lt 60; $i++) {
+                        Start-Sleep -Seconds 2
+                        try {
+                            $response = Invoke-WebRequest `
+                                -Uri "http://localhost:8082/api/assets" `
+                                -UseBasicParsing `
+                                -TimeoutSec 3
+
+                            if ($response.StatusCode -eq 200) {
+                                $ready = $true
+                                break
+                            }
+                        } catch {}
+
+                        $process.Refresh()
+                        if ($process.HasExited) {
+                            throw "Temporary application stopped. Check selenium-app-error.log"
+                        }
+                    }
+
+                    if (-not $ready) {
+                        throw "Temporary application did not become ready on port 8082. Check selenium-app.log and selenium-app-error.log"
+                    }
+                '''
+
+                bat 'cd selenium-tests && mvn test -Dapp.url=http://localhost:8082/'
+            }
+
+            post {
+                always {
+                    junit testResults: 'selenium-tests/target/surefire-reports/*.xml',
+                          allowEmptyResults: false
+
                     powershell '''
-                        $pidFile = "deploy.pid"
-                        $batFile = "$env:WORKSPACE\\start-app.bat"
-
-                        # Stop previous deployment if it exists
-                        if (Test-Path $pidFile) {
-                            $oldPid = Get-Content $pidFile
-
-                            if ($oldPid) {
-                                $oldProcess = Get-Process -Id $oldPid -ErrorAction SilentlyContinue
-
-                                if ($oldProcess) {
-                                    Stop-Process -Id $oldPid -Force
-                                    Write-Host "Stopped previous application process: $oldPid"
+                        if (Test-Path "test-app.pid") {
+                            $testPid = Get-Content "test-app.pid" | Select-Object -First 1
+                            if ($testPid -match '^\\d+$') {
+                                $p = Get-Process -Id ([int]$testPid) -ErrorAction SilentlyContinue
+                                if ($p) {
+                                    Stop-Process -Id ([int]$testPid) -Force
                                 }
                             }
-
-                            Remove-Item $pidFile -Force
+                            Remove-Item "test-app.pid" -Force -ErrorAction SilentlyContinue
                         }
-
-                        # Find the packaged JAR
-                        $jar = Get-ChildItem "target\\*.jar" |
-                               Where-Object { $_.Name -notmatch "original" } |
-                               Select-Object -First 1
-
-                        if (-not $jar) {
-                            throw "JAR file not found."
-                        }
-
-                        Write-Host "Deploying: $($jar.FullName)"
-                        Write-Host "Application port: $env:APP_PORT"
-
-                        # Create a detached startup script
-                        $batContent = @"
-@echo off
-set JENKINS_NODE_COOKIE=dontKillMe
-cd /d "$env:WORKSPACE"
-start "" /b java -Duser.timezone=UTC -jar "$($jar.FullName)" --server.port=$env:APP_PORT > "$env:WORKSPACE\\deploy.log" 2> "$env:WORKSPACE\\deploy-error.log"
-"@
-
-                        Set-Content -Path $batFile -Value $batContent
-
-                        Write-Host "Starting detached Spring Boot application..."
-
-                        Start-Process `
-                            -FilePath "cmd.exe" `
-                            -ArgumentList "/c", "`"$batFile`"" `
-                            -WorkingDirectory $env:WORKSPACE `
-                            -WindowStyle Hidden
-
-                        # Give Spring Boot time to initialize
-                        Start-Sleep -Seconds 8
-
-                        # Verify that the deployed Java process exists
-                        $javaProcess = Get-CimInstance Win32_Process |
-                            Where-Object {
-                                $_.Name -eq "java.exe" -and
-                                $_.CommandLine -like "*asset-allocation-portal-0.0.1-SNAPSHOT.jar*"
-                            } |
-                            Select-Object -First 1
-
-                        if (-not $javaProcess) {
-                            Write-Host "Application process was not detected."
-
-                            if (Test-Path "$env:WORKSPACE\\deploy.log") {
-                                Write-Host "----- deploy.log -----"
-                                Get-Content "$env:WORKSPACE\\deploy.log" -Tail 50
-                            }
-
-                            if (Test-Path "$env:WORKSPACE\\deploy-error.log") {
-                                Write-Host "----- deploy-error.log -----"
-                                Get-Content "$env:WORKSPACE\\deploy-error.log" -Tail 50
-                            }
-
-                            throw "Application process did not start."
-                        }
-
-                        Set-Content $pidFile $javaProcess.ProcessId
-
-                        Write-Host "Application started with PID: $($javaProcess.ProcessId)"
-                        Write-Host "Application port: $env:APP_PORT"
-                        Write-Host "Deployment completed. Jenkins can continue."
                     '''
                 }
+            }
+        }
+
+        stage('Deploy Application') {
+            steps {
+                powershell '''
+                    $ErrorActionPreference = "Stop"
+                    $jar = Join-Path $PWD.Path "target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar"
+                    $java = (Get-Command java.exe -ErrorAction Stop).Source
+                    $port = [int]$env:APP_PORT
+
+                    if (-not (Test-Path $jar)) {
+                        throw "Application JAR not found: $jar"
+                    }
+
+                    if (Test-Path "deploy.pid") {
+                        $oldPid = Get-Content "deploy.pid" | Select-Object -First 1
+                        if ($oldPid -match '^\\d+$') {
+                            $oldProcess = Get-Process -Id ([int]$oldPid) -ErrorAction SilentlyContinue
+                            if ($oldProcess) {
+                                Stop-Process -Id ([int]$oldPid) -Force
+                                Start-Sleep -Seconds 2
+                            }
+                        }
+                    }
+
+                    $env:JENKINS_NODE_COOKIE = "dontKillMe"
+
+                    $app = Start-Process `
+                        -FilePath $java `
+                        -ArgumentList @("-Duser.timezone=UTC", "-jar", $jar, "--server.port=$port") `
+                        -WorkingDirectory $PWD.Path `
+                        -RedirectStandardOutput (Join-Path $PWD.Path "deploy.log") `
+                        -RedirectStandardError (Join-Path $PWD.Path "deploy-error.log") `
+                        -PassThru
+
+                    $app.Id | Set-Content "deploy.pid"
+
+                    $ready = $false
+                    for ($i = 0; $i -lt 30; $i++) {
+                        Start-Sleep -Seconds 2
+                        try {
+                            $response = Invoke-WebRequest `
+                                -Uri "http://localhost:$port/api/assets" `
+                                -UseBasicParsing `
+                                -TimeoutSec 3
+
+                            if ($response.StatusCode -eq 200) {
+                                $ready = $true
+                                break
+                            }
+                        } catch {}
+
+                        $app.Refresh()
+                        if ($app.HasExited) {
+                            throw "Deployed application stopped. Check deploy-error.log"
+                        }
+                    }
+
+                    if (-not $ready) {
+                        throw "Deployment did not become ready on port $port. Check deploy.log and deploy-error.log"
+                    }
+
+                    Write-Host "Deployment successful at http://localhost:$port/"
+                '''
             }
         }
     }
 
     post {
         success {
-            echo 'Pipeline and deployment completed successfully.'
+            echo 'Week 10 pipeline completed: Selenium tests passed and deployment succeeded.'
         }
-
         failure {
-            echo 'Pipeline or deployment failed.'
+            echo 'Pipeline failed. Check the failed stage, Selenium report, and application logs.'
         }
     }
 }
