@@ -40,93 +40,31 @@ pipeline {
 
         stage('Start Test Application') {
             steps {
-                powershell '''
-                    $ErrorActionPreference = 'Stop'
+                bat '''
+                    @echo off
+                    setlocal
 
-                    $jar = Join-Path $env:WORKSPACE "target\\$env:JAR_NAME"
-                    $stdout = Join-Path $env:WORKSPACE 'test-app.log'
-                    $stderr = Join-Path $env:WORKSPACE 'test-app-error.log'
-                    $pidFile = Join-Path $env:WORKSPACE 'test-app.pid'
+                    set "JAR=target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar"
 
-                    if (!(Test-Path $jar)) {
-                        throw "Application JAR not found: $jar"
-                    }
-
-                    # Remove stale PID and log files.
-                    Remove-Item $pidFile, $stdout, $stderr `
-                        -Force -ErrorAction SilentlyContinue
-
-                    # Do not start a second test application on port 8082.
-                    $listener = Get-NetTCPConnection `
-                        -LocalPort 8082 -State Listen `
-                        -ErrorAction SilentlyContinue |
-                        Select-Object -First 1
-
-                    if ($listener) {
-                        throw "Port 8082 is already occupied by PID $($listener.OwningProcess). Investigate it before continuing."
-                    }
-
-                    $java = (Get-Command java.exe -ErrorAction Stop).Source
-
-                    Write-Host "Java executable: $java"
-                    Write-Host "Starting test application on port 8082..."
-
-                    $arguments = @(
-                        '-Duser.timezone=UTC'
-                        '-jar'
-                        "`"$jar`""
-                        '--server.port=8082'
-                        "--spring.datasource.url=$env:DB_URL"
+                    if not exist "%JAR%" (
+                        echo ERROR: Application JAR not found.
+                        exit /b 1
                     )
 
-                    $process = Start-Process `
-                        -FilePath $java `
-                        -ArgumentList $arguments `
-                        -WorkingDirectory $env:WORKSPACE `
-                        -RedirectStandardOutput $stdout `
-                        -RedirectStandardError $stderr `
-                        -PassThru
+                    echo Starting test application on port 8082...
 
-                    Set-Content -Path $pidFile -Value $process.Id
+                    start "AssetTestApp" /B cmd /c "java -Duser.timezone=UTC -jar %JAR% --server.port=8082 --spring.datasource.url=jdbc:postgresql://localhost:5432/assetdb > test-app.log 2>&1"
 
-                    Write-Host "Test application PID: $($process.Id)"
+                    powershell.exe -NoProfile -Command ^
+                    "$deadline = (Get-Date).AddSeconds(90); $ready = $false; while ((Get-Date) -lt $deadline) { try { $r = Invoke-WebRequest 'http://127.0.0.1:8082/' -UseBasicParsing -TimeoutSec 3; if ($r.StatusCode -eq 200) { $ready = $true; break } } catch {}; Start-Sleep -Seconds 2 }; if (-not $ready) { Get-Content 'test-app.log' -Tail 40 -ErrorAction SilentlyContinue; exit 1 }"
 
-                    $ready = $false
+                    if errorlevel 1 (
+                        echo ERROR: Application did not become ready.
+                        exit /b 1
+                    )
 
-                    for ($i = 0; $i -lt 45; $i++) {
-                        Start-Sleep -Seconds 2
-                        $process.Refresh()
-
-                        if ($process.HasExited) {
-                            Write-Host 'Application exited during startup.'
-                            Get-Content $stdout -Tail 40 -ErrorAction SilentlyContinue
-                            Get-Content $stderr -Tail 40 -ErrorAction SilentlyContinue
-                            throw 'Test application exited before becoming ready.'
-                        }
-
-                        try {
-                            $response = Invoke-WebRequest `
-                                -Uri 'http://127.0.0.1:8082/' `
-                                -TimeoutSec 3 `
-                                -UseBasicParsing
-
-                            if ($response.StatusCode -eq 200) {
-                                $ready = $true
-                                break
-                            }
-                        }
-                        catch {
-                            # The application may still be starting.
-                        }
-                    }
-
-                    if (!$ready) {
-                        Get-Content $stdout -Tail 40 -ErrorAction SilentlyContinue
-                        Get-Content $stderr -Tail 40 -ErrorAction SilentlyContinue
-                        throw 'Test application did not become ready on port 8082.'
-                    }
-
-                    Write-Host 'Test application is ready.'
+                    echo Test application is ready.
+                    exit /b 0
                 '''
             }
         }
