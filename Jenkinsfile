@@ -46,80 +46,30 @@ pipeline {
             }
         }
 
-        stage('Start Test Application') {
-            steps {
-                powershell '''
-                    $ErrorActionPreference = "Stop"
+        $listener = Get-NetTCPConnection `
+    -LocalPort $port `
+    -State Listen `
+    -ErrorAction SilentlyContinue
 
-                    $jar = Join-Path $PWD.Path "target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar"
-                    $java = (Get-Command java.exe -ErrorAction Stop).Source
-                    $port = 8082
+if ($listener) {
+    foreach ($entry in $listener) {
+        $existingPid = $entry.OwningProcess
 
-                    if (-not (Test-Path $jar)) {
-                        throw "Application JAR not found: $jar"
-                    }
+        $existingProcess = Get-CimInstance Win32_Process `
+            -Filter "ProcessId = $existingPid" `
+            -ErrorAction SilentlyContinue
 
-                    $listener = Get-NetTCPConnection `
-                        -LocalPort $port `
-                        -State Listen `
-                        -ErrorAction SilentlyContinue
+        if ($existingProcess -and
+            $existingProcess.CommandLine -match 'asset-allocation-portal.*\.jar' -and
+            $existingProcess.CommandLine -match '--server.port=8082') {
 
-                    if ($listener) {
-                        throw "Port $port is already occupied. Stop the previous test application before retrying."
-                    }
-
-                    $env:JENKINS_NODE_COOKIE = "dontKillMe"
-
-                    $app = Start-Process `
-                        -FilePath $java `
-                        -ArgumentList @(
-                            "-Duser.timezone=UTC",
-                            "-jar",
-                            $jar,
-                            "--server.port=$port"
-                        ) `
-                        -WorkingDirectory $PWD.Path `
-                        -RedirectStandardOutput (Join-Path $PWD.Path "selenium-app.log") `
-                        -RedirectStandardError (Join-Path $PWD.Path "selenium-app-error.log") `
-                        -PassThru
-
-                    $app.Id | Set-Content "test-app.pid"
-
-                    $ready = $false
-
-                    for ($i = 0; $i -lt 60; $i++) {
-                        Start-Sleep -Seconds 2
-
-                        try {
-                            $response = Invoke-WebRequest `
-                                -Uri "http://localhost:$port/api/assets" `
-                                -UseBasicParsing `
-                                -TimeoutSec 3
-
-                            if ($response.StatusCode -eq 200) {
-                                $ready = $true
-                                break
-                            }
-                        } catch {}
-
-                        $app.Refresh()
-
-                        if ($app.HasExited) {
-                            Get-Content "selenium-app-error.log" -Tail 40
-                            throw "Test application exited before becoming ready."
-                        }
-                    }
-
-                    if (-not $ready) {
-                        Get-Content "selenium-app.log" -Tail 40
-                        Get-Content "selenium-app-error.log" -Tail 40
-                        throw "Test application did not become ready on port $port."
-                    }
-
-                    Write-Host "Test application is ready on port $port."
-                '''
-            }
+            Stop-Process -Id $existingPid -Force
+            Start-Sleep -Seconds 2
+        } else {
+            throw "Port $port is occupied by an unrelated process (PID $existingPid). Not stopping it."
         }
+    }
+}
 
         stage('Run Selenium Tests') {
             steps {
