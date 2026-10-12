@@ -136,99 +136,85 @@ stage('Stop Test Application') {
 
 
         stage('Deploy Application') {
-            steps {
-                timeout(time: 2, unit: 'MINUTES') {
-                    powershell '''
-                        $ErrorActionPreference = 'Stop'
-                        $port = 8081
-                        $jar = Join-Path $PWD 'target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar'
-                        $pidFile = Join-Path $PWD 'deploy.pid'
-                        $out = Join-Path $PWD 'deploy.stdout.log'
-                        $err = Join-Path $PWD 'deploy.stderr.log'
+    steps {
+        timeout(time: 90, unit: 'SECONDS') {
+            powershell '''
+                $ErrorActionPreference = 'Stop'
+                $port = 8081
+                $jar = Join-Path $PWD 'target\\asset-allocation-portal-0.0.1-SNAPSHOT.jar'
+                $pidFile = Join-Path $PWD 'deploy.pid'
+                $out = Join-Path $PWD 'deploy.stdout.log'
+                $err = Join-Path $PWD 'deploy.stderr.log'
 
-                        if (!(Test-Path $jar)) {
-                            throw "Application JAR not found: $jar"
-                        }
-
-                        # Stop the previously deployed app only if its PID
-                        # file identifies a Java process for this application.
-                        if (Test-Path $pidFile) {
-                            $oldPid = 0
-                            $rawPid = (Get-Content $pidFile -Raw).Trim()
-
-                            if ([int]::TryParse($rawPid, [ref]$oldPid)) {
-                                $old = Get-CimInstance Win32_Process `
-                                    -Filter "ProcessId = $oldPid" `
-                                    -ErrorAction SilentlyContinue
-
-                                if ($old -and $old.Name -eq 'java.exe' -and
-                                    $old.CommandLine -match 'asset-allocation-portal') {
-                                    Stop-Process -Id $oldPid -Force
-                                    Start-Sleep -Seconds 2
-                                }
-                            }
-
-                            Remove-Item $pidFile -Force
-                        }
-
-                        $listener = Get-NetTCPConnection `
-                            -LocalPort $port -State Listen `
-                            -ErrorAction SilentlyContinue |
-                            Select-Object -First 1
-
-                        if ($listener) {
-                            throw "Port 8081 is already occupied. Refusing to stop an unidentified process."
-                        }
-
-                        Remove-Item $out, $err `
-                            -Force -ErrorAction SilentlyContinue
-
-                        $p = Start-Process -FilePath 'java' `
-                            -ArgumentList @(
-                                '-Duser.timezone=UTC',
-                                '-jar',
-                                "`"$jar`"",
-                                '--server.port=8081'
-                            ) `
-                            -PassThru `
-                            -RedirectStandardOutput $out `
-                            -RedirectStandardError $err
-
-                        Set-Content -Path $pidFile -Value $p.Id
-
-                        $ready = $false
-                        for ($i = 0; $i -lt 30; $i++) {
-                            Start-Sleep -Seconds 2
-
-                            if ($p.HasExited) {
-                                break
-                            }
-
-                            try {
-                                $response = Invoke-WebRequest `
-                                    -Uri 'http://127.0.0.1:8081/' `
-                                    -TimeoutSec 3 `
-                                    -UseBasicParsing
-
-                                if ($response.StatusCode -eq 200) {
-                                    $ready = $true
-                                    break
-                                }
-                            } catch {}
-                        }
-
-                        if (!$ready) {
-                            Get-Content $out -ErrorAction SilentlyContinue
-                            Get-Content $err -ErrorAction SilentlyContinue
-                            throw 'Deployment failed: application did not become ready on port 8081.'
-                        }
-
-                        Write-Host 'Deployment successful: http://localhost:8081/'
-                    '''
+                if (!(Test-Path $jar)) {
+                    throw "JAR not found: $jar"
                 }
-            }
+
+                # Reuse the currently running application if it is healthy.
+                try {
+                    $r = Invoke-WebRequest `
+                        -Uri 'http://127.0.0.1:8081/' `
+                        -TimeoutSec 3 -UseBasicParsing
+
+                    if ($r.StatusCode -eq 200) {
+                        Write-Host 'Application is already healthy at http://localhost:8081/'
+                        exit 0
+                    }
+                } catch {}
+
+                $listener = Get-NetTCPConnection `
+                    -LocalPort $port -State Listen `
+                    -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+
+                if ($listener) {
+                    throw "Port 8081 is occupied but the application did not return HTTP 200. Inspect the existing process before stopping it."
+                }
+
+                Remove-Item $out, $err `
+                    -Force -ErrorAction SilentlyContinue
+
+                $p = Start-Process -FilePath 'java' `
+                    -ArgumentList @(
+                        '-Duser.timezone=UTC',
+                        '-jar',
+                        "`"$jar`"",
+                        '--server.port=8081'
+                    ) `
+                    -PassThru `
+                    -RedirectStandardOutput $out `
+                    -RedirectStandardError $err
+
+                Set-Content -Path $pidFile -Value $p.Id
+
+                for ($i = 0; $i -lt 30; $i++) {
+                    Start-Sleep -Seconds 2
+
+                    if ($p.HasExited) {
+                        Get-Content $out -ErrorAction SilentlyContinue
+                        Get-Content $err -ErrorAction SilentlyContinue
+                        throw 'Application process exited during deployment.'
+                    }
+
+                    try {
+                        $r = Invoke-WebRequest `
+                            -Uri 'http://127.0.0.1:8081/' `
+                            -TimeoutSec 2 -UseBasicParsing
+
+                        if ($r.StatusCode -eq 200) {
+                            Write-Host 'Deployment successful: http://localhost:8081/'
+                            return
+                        }
+                    } catch {}
+                }
+
+                Get-Content $out -ErrorAction SilentlyContinue
+                Get-Content $err -ErrorAction SilentlyContinue
+                throw 'Deployment timed out waiting for HTTP 200.'
+            '''
         }
     }
+}
 
     post {
         always {
