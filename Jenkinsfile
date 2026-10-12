@@ -153,7 +153,7 @@ pipeline {
 
         stage('Verify Docker Access') {
     steps {
-        bat 'docker version'
+        bat '"C:\\Users\\Sahil Mahadik\\AppData\\Local\\Programs\\DockerDesktop\\resources\\bin\\docker.exe" version'
     }
 }
 
