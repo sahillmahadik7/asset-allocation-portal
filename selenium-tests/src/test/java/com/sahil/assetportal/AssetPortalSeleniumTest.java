@@ -26,6 +26,7 @@ import java.time.Duration;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
+import org.openqa.selenium.chrome.ChromeOptions;
 
 class AssetPortalSeleniumTest {
 
@@ -41,7 +42,15 @@ class AssetPortalSeleniumTest {
         assetCode = "SEL-" +
                 UUID.randomUUID().toString().substring(0, 8);
 
-        driver = new ChromeDriver();
+        ChromeOptions options = new ChromeOptions();
+options.addArguments(
+        "--headless=new",
+        "--disable-gpu",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--window-size=1920,1080"
+);
+driver = new ChromeDriver(options);
         wait = new WebDriverWait(driver, Duration.ofSeconds(15));
 
         driver.manage().window().maximize();
