@@ -34,7 +34,7 @@ class AssetPortalSeleniumTest {
     private String assetCode;
 
     private static final String BASE_URL =
-            "http://localhost:8081/";
+        System.getProperty("app.url", "http://localhost:8081/");
 
     @BeforeEach
     void setUp() {
