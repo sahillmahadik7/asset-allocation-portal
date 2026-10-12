@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asset Allocation Portal</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <div class="app">
+
+        <aside class="sidebar">
+            <div class="logo">
+                <div class="logo-icon">A</div>
+                <div>
+                    <h2>Asset Portal</h2>
+                    <span>IT Asset Management</span>
+                </div>
+            </div>
+
+            <nav>
+                <a href="#" class="active">
+                    <span>▦</span> Dashboard
+                </a>
+                <a href="#assets">
+                    <span>▣</span> Assets
+                </a>
+                <a href="#addAsset">
+                    <span>＋</span> Add Asset
+                </a>
+            </nav>
+
+            <div class="sidebar-bottom">
+                <span>DevOps Project</span>
+                <small>Spring Boot • PostgreSQL</small>
+            </div>
+        </aside>
+
+        <main class="main">
+
+            <header class="topbar">
+                <div>
+                    <h1>Asset Dashboard</h1>
+                    <p>Manage and monitor your organization's IT assets.</p>
+                </div>
+
+                <button class="primary-btn" onclick="openAddForm()">
+                    + Add Asset
+                </button>
+            </header>
+
+            <section class="stats">
+
+                <div class="stat-card">
+                    <div class="stat-icon">▦</div>
+                    <div>
+                        <span>Total Assets</span>
+                        <strong id="totalAssets">0</strong>
+                    </div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-icon available">✓</div>
+                    <div>
+                        <span>Available</span>
+                        <strong id="availableAssets">0</strong>
+                    </div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-icon allocated">→</div>
+                    <div>
+                        <span>Allocated</span>
+                        <strong id="allocatedAssets">0</strong>
+                    </div>
+                </div>
+
+                <div class="stat-card">
+                    <div class="stat-icon maintenance">!</div>
+                    <div>
+                        <span>Maintenance</span>
+                        <strong id="maintenanceAssets">0</strong>
+                    </div>
+                </div>
+
+            </section>
+
+            <section class="content-card" id="assets">
+
+                <div class="section-header">
+                    <div>
+                        <h2>Asset Inventory</h2>
+                        <p>All registered IT assets</p>
+                    </div>
+
+                    <div class="search-box">
+                        <input type="text" id="searchInput" placeholder="Search assets..." oninput="filterAssets()">
+                    </div>
+                </div>
+
+                <div class="table-wrapper">
+
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Asset Code</th>
+                                <th>Asset</th>
+                                <th>Type</th>
+                                <th>Brand / Model</th>
+                                <th>Serial Number</th>
+                                <th>Status</th>
+                                <th>Location</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+
+                        <tbody id="assetTableBody">
+                        </tbody>
+                    </table>
+
+                    <div id="emptyState" class="empty-state">
+                        <div>▣</div>
+                        <h3>No assets found</h3>
+                        <p>Add your first IT asset to get started.</p>
+                        <button class="primary-btn" onclick="openAddForm()">
+                            + Add Asset
+                        </button>
+                    </div>
+
+                </div>
+
+            </section>
+
+        </main>
+    </div>
+
+
+    <!-- Add/Edit Modal -->
+
+    <div class="modal-overlay" id="assetModal">
+
+        <div class="modal">
+
+            <div class="modal-header">
+                <div>
+                    <h2 id="modalTitle">Add Asset</h2>
+                    <p>Enter the asset information below.</p>
+                </div>
+
+                <button class="close-btn" onclick="closeForm()">×</button>
+            </div>
+
+            <form id="assetForm">
+
+                <input type="hidden" id="assetId">
+
+                <div class="form-grid">
+
+                    <div class="form-group">
+                        <label>Asset Code *</label>
+                        <input type="text" id="assetCode" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Asset Type *</label>
+                        <select id="assetType" required>
+                            <option value="">Select type</option>
+                            <option value="Laptop">Laptop</option>
+                            <option value="Desktop">Desktop</option>
+                            <option value="Monitor">Monitor</option>
+                            <option value="Printer">Printer</option>
+                            <option value="Server">Server</option>
+                            <option value="Network Device">Network Device</option>
+                            <option value="Mobile">Mobile</option>
+                            <option value="Other">Other</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group full">
+                        <label>Asset Name *</label>
+                        <input type="text" id="name" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Brand</label>
+                        <input type="text" id="brand">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Model</label>
+                        <input type="text" id="model">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Serial Number</label>
+                        <input type="text" id="serialNumber">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Status *</label>
+                        <select id="status" required>
+                            <option value="">Select status</option>
+                            <option value="Available">Available</option>
+                            <option value="Allocated">Allocated</option>
+                            <option value="Maintenance">Maintenance</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group full">
+                        <label>Location *</label>
+                        <input type="text" id="location" required>
+                    </div>
+
+                </div>
+
+                <div class="form-actions">
+                    <button type="button" class="secondary-btn" onclick="closeForm()">
+                        Cancel
+                    </button>
+
+                    <button type="submit" class="primary-btn">
+                        Save Asset
+                    </button>
+                </div>
+
+            </form>
+
+        </div>
+    </div>
+
+
+    <div id="toast" class="toast"></div>
+
+    <script src="app.js"></script>
+
+</body>
+
+</html>
