@@ -133,19 +133,14 @@ pipeline {
         }
 
         stage('Run Selenium Tests') {
-            steps {
-                bat 'cd selenium-tests && mvn test "-Dapp.url=http://localhost:8082/"'
-            }
-
-            post {
-                always {
-                    junit(
-                        testResults: 'selenium-tests/target/surefire-reports/*.xml',
-                        allowEmptyResults: false
-                    )
-                }
+    steps {
+        timeout(time: 4, unit: 'MINUTES') {
+            dir('selenium-tests') {
+                bat 'mvn -B test "-Dapp.url=http://localhost:8082/"'
             }
         }
+    }
+}
 
         stage('Stop Test Application') {
             steps {
