@@ -68,7 +68,7 @@ pipeline {
                                 -Filter "ProcessId = $($listener.OwningProcess)"
 
                             if ($existing.CommandLine -notmatch
-                                'asset-allocation-portal.*\.jar|asset-allocation-portal-0\.0\.1-SNAPSHOT\.jar') {
+    'asset-allocation-portal.*[.]jar|asset-allocation-portal-0[.]0[.]1-SNAPSHOT[.]jar') {
                                 throw "Port $port is occupied by an unrelated process (PID $($listener.OwningProcess))."
                             }
 
